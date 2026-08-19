@@ -17,7 +17,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import imbalance, leakage, metrics, threshold
+from src import fairness, imbalance, leakage, metrics, threshold
 from src.reason_codes import ReasonCoder
 
 MODEL_VERSION = "fraud-gbm-0.1.0"
@@ -260,10 +260,137 @@ def main() -> None:
         out.append(json.dumps(rec, indent=2))
     out.append("```")
 
+    # ---------------------------------------------------- 8. fairness
+    out.append("\n## 8. Disparate impact (SYNTHETIC overlay)\n")
+    out.append("> **The protected attribute below does not exist in this data.** It is "
+               "constructed by `src/fairness.py`, correlated with features that do "
+               "exist, and used to exercise the machinery of a fair-lending review. "
+               "Every number in this section is a property of that construction. "
+               "Nothing about real-world disparate impact follows from it.\n")
+    out.append("Framing: neither model uses the attribute as an input, so disparate "
+               "**treatment** is not the question here. Disparate **impact** -- a "
+               "neutral rule producing disproportionate outcomes -- is.\n")
+
+    group_te = fairness.synthesize_protected_attribute(
+        te, correlates={"card_tenure_days": -0.85, "mcc_risk": 0.55, "hour": 0.20})
+    approved = prob < chosen["threshold"]
+    air = fairness.adverse_impact_ratio(approved, group_te)
+
+    out.append("### 8.1 Adverse impact ratio at the operating threshold\n")
+    out.append("| group | n | approval rate |\n|---|---|---|")
+    out.append("| 1 | {:,} | {:.4f} |".format(int((group_te == 1).sum()), air["rate_group_1"]))
+    out.append("| 0 | {:,} | {:.4f} |".format(int((group_te == 0).sum()), air["rate_group_0"]))
+    out.append("\n**AIR = {:.4f}** ({} rule: flags below {:.2f}) -> {}. "
+               "Gap in approval rate: {:.2f} percentage points.\n".format(
+                   air["air"], "80%", fairness.AIR_THRESHOLD,
+                   "**FLAGS -- investigate**" if air["flags"] else "does not flag",
+                   100 * air["pp_gap"]))
+    out.append("The 80% rule is a screen that triggers investigation. It is not proof "
+               "of discrimination below the line, and not a safe harbour above it.\n")
+
+    out.append("\n### 8.2 Score distribution across groups\n")
+    sd = fairness.score_distribution(prob, group_te)
+    out.append("| group | n | mean score | median | p90 | p99 |\n|---|---|---|---|---|---|")
+    for g in ("group_1", "group_0"):
+        d = sd[g]
+        out.append("| {} | {:,} | {:.5f} | {:.5f} | {:.5f} | {:.5f} |".format(
+            g[-1], sd["n_" + g], d["mean"], d["median"], d["p90"], d["p99"]))
+    out.append("\nGroup-separation AUC of the score itself: **{:.4f}** "
+               "(0.500 = the two score distributions are interchangeable). Mean gap "
+               "{:+.5f}.\n".format(sd["auc_group_separation"], sd["mean_gap"]))
+    out.append("Two models can share an AIR and still distribute risk very "
+               "differently; a single threshold ratio hides that, which is why this "
+               "table exists alongside 8.1.\n")
+
+    out.append("\n### 8.3 AIR across operating points\n")
+    out.append("AIR at one threshold is a single sample from a curve.\n")
+    out.append("| target decline rate | threshold | approval g1 | approval g0 | AIR | flags |")
+    out.append("|---|---|---|---|---|---|")
+    for r in fairness.threshold_sweep(prob, group_te):
+        out.append("| {:.1%} | {:.5f} | {:.4f} | {:.4f} | {:.4f} | {} |".format(
+            r["decline_rate_target"], r["threshold"], r["approval_1"],
+            r["approval_0"], r["air"], "**yes**" if r["flags"] else ""))
+
+    out.append("\n### 8.4 Proxy ablation -- the test that matters\n")
+    out.append("Dropping the protected attribute achieves nothing if the remaining "
+               "features reconstruct it. This retrains without the suspected proxies "
+               "and re-measures.\n")
+    abl = fairness.proxy_ablation(
+        X_te, FEATURES, y_te, group_te,
+        suspected_proxies=["card_tenure_days", "mcc_risk"],
+        model_factory=imbalance.make_model)
+    out.append("| | full model | proxies dropped | change |\n|---|---|---|---|")
+    out.append("| AIR at 98th-pct threshold | {:.4f} | {:.4f} | {:+.4f} |".format(
+        abl["air_full"], abl["air_ablated"], abl["air_change"]))
+    out.append("| group reconstructable from features (AUC) | {:.4f} | {:.4f} | {:+.4f} |".format(
+        abl["proxy_auc_full"], abl["proxy_auc_ablated"],
+        abl["proxy_auc_ablated"] - abl["proxy_auc_full"]))
+    out.append("\nDropped: `{}`\n".format("`, `".join(abl["dropped"])))
+    # AUC 0.5 is the floor (a coin flip), so the meaningful quantity is how much
+    # of the *lift above chance* survives ablation -- not the raw AUC, which a
+    # naive threshold would read as "still reconstructable" at 0.55.
+    lift_full = abl["proxy_auc_full"] - 0.5
+    lift_abl = abl["proxy_auc_ablated"] - 0.5
+    retained = lift_abl / lift_full if lift_full > 0 else 0.0
+    out.append("Reading of this run, quantified: reconstruction lift above chance "
+               "falls from {:.4f} to {:.4f}, so **{:.0%} of the recoverable group "
+               "signal survives** dropping `{}`. The outcome disparity moved "
+               "{:+.4f}.\n".format(
+                   lift_full, lift_abl, retained, "`, `".join(abl["dropped"]),
+                   abl["air_change"]))
+    if retained >= 0.50:
+        out.append("More than half the signal survives: the attribute is encoded "
+                   "redundantly across the remaining features, and column-dropping is "
+                   "theatre. This is the normal case, and it is why 'we removed the zip "
+                   "code' is not a defence.\n")
+    else:
+        out.append("Most of the recoverable signal lived in the dropped columns -- the "
+                   "easier situation, and not the one to plan for. Note what did NOT "
+                   "happen even so: the disparity barely moved ({:+.4f}). Removing the "
+                   "proxies made the group harder to *reconstruct* without making the "
+                   "outcomes meaningfully more equal, which is the distinction that "
+                   "matters. Reconstructability and impact are different questions, and "
+                   "fixing the first is not evidence of fixing the second.\n".format(
+                       abl["air_change"]))
+    if abs(abl["air_change"]) < 0.02 and not air["flags"]:
+        out.append("Caveat on interpreting any of 8.4: the disparity here is small to "
+                   "begin with (AIR {:.4f}, well above the 0.80 screen), so there is "
+                   "little room for ablation to move it. This test is far more "
+                   "informative on a model that actually flags -- the machinery is "
+                   "demonstrated, the scenario is benign.\n".format(air["air"]))
+
+    out.append("\n### 8.5 What this section does NOT establish\n")
+    out.append("- Nothing about real populations. The attribute is synthetic.\n"
+               "- No causal claim. AIR is an outcome ratio, not a mechanism.\n"
+               "- No legal conclusion. Business-necessity and less-discriminatory-"
+               "alternative analysis are not performed here.\n"
+               "- No intersectional analysis: one binary attribute, which is the "
+               "crudest possible cut.\n")
+
     (ROOT / "docs").mkdir(exist_ok=True)
     (ROOT / "docs" / "RESULTS.md").write_text(
         "# ML-1 results (generated by train.py -- do not hand-edit)\n\n"
         + "\n".join(out) + "\n", encoding="utf-8")
+
+    # ---------------------------------------------------- artifact for serving
+    # The threshold travels WITH the model. Shipping a model without the
+    # operating point it was validated at is how a score gets reinterpreted at a
+    # different cutoff by a downstream team and nobody notices.
+    import pickle
+    (ROOT / "artifacts").mkdir(exist_ok=True)
+    with (ROOT / "artifacts" / "model.pkl").open("wb") as fh:
+        pickle.dump({
+            "model": model,
+            "features": FEATURES,
+            "reference_X": X_tr[:5000],
+            "reference_scores": ref,
+            "model_version": MODEL_VERSION,
+            "policy_version": "cost-matrix-2026-08",
+            "threshold": float(chosen["threshold"]),
+            "trained_through_day": TRAIN_END_DAY,
+            "strategy": best,
+        }, fh)
+    print("wrote artifacts/model.pkl (model + threshold + policy version)")
 
     print("selected strategy :", best)
     print("AUC / KS          : {:.4f} / {:.4f}".format(

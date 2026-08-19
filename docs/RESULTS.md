@@ -222,3 +222,71 @@ What actually catches this early, in priority order:
   "attribution_method": "occlusion-vs-median (not SHAP; see reason_codes.py)"
 }
 ```
+
+## 8. Disparate impact (SYNTHETIC overlay)
+
+> **The protected attribute below does not exist in this data.** It is constructed by `src/fairness.py`, correlated with features that do exist, and used to exercise the machinery of a fair-lending review. Every number in this section is a property of that construction. Nothing about real-world disparate impact follows from it.
+
+Framing: neither model uses the attribute as an input, so disparate **treatment** is not the question here. Disparate **impact** -- a neutral rule producing disproportionate outcomes -- is.
+
+### 8.1 Adverse impact ratio at the operating threshold
+
+| group | n | approval rate |
+|---|---|---|
+| 1 | 29,004 | 0.9732 |
+| 0 | 54,459 | 0.9826 |
+
+**AIR = 0.9905** (80% rule: flags below 0.80) -> does not flag. Gap in approval rate: 0.93 percentage points.
+
+The 80% rule is a screen that triggers investigation. It is not proof of discrimination below the line, and not a safe harbour above it.
+
+
+### 8.2 Score distribution across groups
+
+| group | n | mean score | median | p90 | p99 |
+|---|---|---|---|---|---|
+| 1 | 29,004 | 0.01425 | 0.00824 | 0.03359 | 0.08459 |
+| 0 | 54,459 | 0.01100 | 0.00588 | 0.02590 | 0.06919 |
+
+Group-separation AUC of the score itself: **0.5781** (0.500 = the two score distributions are interchangeable). Mean gap +0.00325.
+
+Two models can share an AIR and still distribute risk very differently; a single threshold ratio hides that, which is why this table exists alongside 8.1.
+
+
+### 8.3 AIR across operating points
+
+AIR at one threshold is a single sample from a curve.
+
+| target decline rate | threshold | approval g1 | approval g0 | AIR | flags |
+|---|---|---|---|---|---|
+| 10.0% | 0.02861 | 0.8700 | 0.9160 | 0.9498 |  |
+| 5.0% | 0.04124 | 0.9341 | 0.9584 | 0.9746 |  |
+| 2.5% | 0.05535 | 0.9672 | 0.9791 | 0.9879 |  |
+| 1.0% | 0.07384 | 0.9862 | 0.9920 | 0.9941 |  |
+| 0.5% | 0.09595 | 0.9927 | 0.9962 | 0.9965 |  |
+
+### 8.4 Proxy ablation -- the test that matters
+
+Dropping the protected attribute achieves nothing if the remaining features reconstruct it. This retrains without the suspected proxies and re-measures.
+
+| | full model | proxies dropped | change |
+|---|---|---|---|
+| AIR at 98th-pct threshold | 0.9900 | 0.9954 | +0.0054 |
+| group reconstructable from features (AUC) | 0.7273 | 0.5533 | -0.1740 |
+
+Dropped: `mcc_risk`, `card_tenure_days`
+
+Reading of this run, quantified: reconstruction lift above chance falls from 0.2273 to 0.0533, so **23% of the recoverable group signal survives** dropping `mcc_risk`, `card_tenure_days`. The outcome disparity moved +0.0054.
+
+Most of the recoverable signal lived in the dropped columns -- the easier situation, and not the one to plan for. Note what did NOT happen even so: the disparity barely moved (+0.0054). Removing the proxies made the group harder to *reconstruct* without making the outcomes meaningfully more equal, which is the distinction that matters. Reconstructability and impact are different questions, and fixing the first is not evidence of fixing the second.
+
+Caveat on interpreting any of 8.4: the disparity here is small to begin with (AIR 0.9905, well above the 0.80 screen), so there is little room for ablation to move it. This test is far more informative on a model that actually flags -- the machinery is demonstrated, the scenario is benign.
+
+
+### 8.5 What this section does NOT establish
+
+- Nothing about real populations. The attribute is synthetic.
+- No causal claim. AIR is an outcome ratio, not a mechanism.
+- No legal conclusion. Business-necessity and less-discriminatory-alternative analysis are not performed here.
+- No intersectional analysis: one binary attribute, which is the crudest possible cut.
+

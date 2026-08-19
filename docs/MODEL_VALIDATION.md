@@ -123,24 +123,142 @@ the cost table.
 
 Champion is the selected strategy from RESULTS.md §3. The other two strategies
 are retained as challengers with their metrics on the same out-of-time window.
-**Promotion criteria are not yet defined** — see §9.
+
+### 5.1 Promotion criteria
+
+A challenger is promoted only if **all** of the following hold. Any single
+failure blocks promotion; there is no aggregate score that lets a strong result
+on one criterion buy a weak one on another.
+
+| Gate | Requirement | Rationale |
+|---|---|---|
+| Shadow period | ≥ 14 days scoring live traffic with decisions logged but not acted on | Two weeks covers a full weekly seasonality cycle; anything shorter measures a Tuesday |
+| Discrimination | precision at the incumbent's operating FPR ≥ champion + 0.01 absolute | The operating point is the only place lift is worth anything |
+| Calibration | Brier ≤ champion × 1.05, reliability curve monotone | The threshold is chosen by $-weighted cost, which consumes calibrated probabilities |
+| Stability | score PSI < 0.10 across the shadow window | A challenger that is already drifting in shadow will not improve in production |
+| Fairness | AIR at the operating threshold not worse than champion by > 0.02 | A challenger that buys accuracy with disparity is not an improvement |
+| Explainability | reason codes generated for 100% of shadow declines | A decline we cannot explain is not shippable regardless of AUC |
+| Rollback | one-command revert to the prior artifact, tested during shadow | Untested rollback is not rollback |
+
+### 5.2 Rollback triggers (post-promotion)
+
+Automatic revert to the prior artifact on any of: decline rate moving > 50%
+relative to the shadow baseline within a 1-hour window; score PSI > 0.25 over
+24 hours; or reason-code generation failure rate > 1%. Rollback is a mechanical
+action, not a meeting — the discussion happens after the revert.
+
+## 6. Monitoring plan
+
+Implemented in `monitor.py`, which reads the **decision log written by the API**
+(`artifacts/decisions.jsonl`), not a data warehouse snapshot. That distinction
+matters: drift must be measured on what was actually scored, including any
+feature-pipeline breakage between the warehouse and the model.
+
+Signals in priority order, which is the ordering derived in RESULTS.md §6:
+
+| # | Signal | Needs labels? | Threshold | Action |
+|---|---|---|---|---|
+| 1 | Decline rate at the frozen threshold | **No** | ±50% relative | Page. Fastest available signal |
+| 2 | Score distribution PSI | **No** | ≥0.10 warn, ≥0.25 page | Investigate upstream features |
+| 3 | Feature PSI | **No** | ≥0.25 warn | Locate which input moved |
+| 4 | Precision / recall decay | Yes | −10% relative | Retrospective confirmation only |
+| 5 | Reason-code failure rate | No | >1% | Page — an unexplainable decline is a compliance issue |
+
+**Why this ordering.** Signal 4 is the one most portfolios lead with, and it is
+last on this list because fraud labels arrive weeks-to-months late via chargeback.
+By the time precision decay is visible, the loss is booked. Signals 1–3 are
+label-free, which is what makes them able to page someone in time.
+
+**Insufficient-data handling.** Below 200 logged decisions, `monitor.run()`
+returns `insufficient_data`, never `healthy`. A monitor that shows green on an
+empty window is worse than one that shows nothing, because it is trusted.
+
+**Retraining triggers.** Scheduled: quarterly. Event-driven: any signal-1 or
+signal-2 page sustained over 48 hours, or a confirmed precision decay > 10%
+relative. Retraining is proposed by the monitoring job and executed by a human —
+automatic retraining on a drifting feed trains on the drift.
+
+**Ownership.** Model owner is accountable for signals 1–5; the fraud policy owner
+owns the threshold and the degradation posture. Neither role is filled — this is
+a portfolio artifact — and that gap is itself a blocker to production use.
+
+## 7. Fairness / disparate impact
+
+Performed on a **synthetic** protected-attribute overlay. Full results in
+RESULTS.md §8; the mechanics are in `src/fairness.py`. Summary of what is tested:
+
+1. **Adverse impact ratio** at the operating threshold, against the 80% rule
+   (EEOC Uniform Guidelines 29 CFR 1607.4(D), as borrowed into fair-lending
+   practice). Screen, not proof; and not a safe harbour above the line either.
+2. **Score-distribution comparison** across groups, including a group-separation
+   AUC of the score itself — two models can share an AIR and distribute risk
+   very differently.
+3. **AIR across five operating points**, because AIR at one threshold is a single
+   sample from a curve.
+4. **Proxy ablation** — the substantive test. Features suspected of encoding the
+   attribute are dropped, the model is refit, and both the disparity *and* the
+   reconstructability of group membership are re-measured. The report quantifies
+   what fraction of the recoverable group signal survives ablation, rather than
+   reporting a binary.
+
+**Disparate treatment vs disparate impact**: neither model uses the protected
+attribute as an input, so treatment is not at issue; impact is. These are
+distinct legal concepts and the report does not blur them.
+
+**Hard limitation, restated because it is the one that matters**: the attribute
+is synthesised by this repository. Every ratio is a property of that
+construction. Presenting these as findings about a real population would be a
+control failure, and no such claim is made anywhere. Also absent: business-
+necessity analysis, less-discriminatory-alternative search, and any
+intersectional cut — the analysis uses one binary attribute, the crudest
+possible.
+
+## 8. Stability: bands and actions
+
+Bands are the standard PSI ones, stated in `src/metrics.py`: <0.10 stable,
+0.10–0.25 monitor, >0.25 investigate.
+
+| Band | Action | Owner |
+|---|---|---|
+| < 0.10 | None. Recorded in the weekly report | Automated |
+| 0.10–0.25 | Ticket. Identify which feature moved and whether an upstream change explains it | Model owner |
+| > 0.25 on a feature | Investigate within 48h. Do not retrain reflexively — establish the cause first | Model owner |
+| > 0.25 on the score | Page. Score-level drift means the decision surface moved | On-call |
+
+RESULTS.md §6 contains the caveat that governs all of the above: population-level
+PSI is near zero even while the model decays out-of-time, because the adversary
+moves inside the ~1% fraud subpopulation. PSI is a necessary check, not a
+sufficient one, and it is ranked third for that reason.
+
+## 9. Ongoing validation schedule
+
+| Activity | Frequency |
+|---|---|
+| Monitoring report review | Weekly |
+| Full revalidation (this document) | Annually, or on any material model change |
+| Fairness re-test | On promotion, and on any threshold change |
+| Threshold review against realised costs | Quarterly |
+| Leakage audit re-run | On any feature addition |
+
+## 10. Change log and sign-offs
+
+| Version | Change | Date | Sign-off |
+|---|---|---|---|
+| 0.1.0 | Initial model, threshold economics, leakage audit | 2026-08 | **unsigned** |
+| 0.2.0 | Fairness §7, monitoring §6, promotion criteria §5.1, scoring API | 2026-08 | **unsigned** |
+
+**No sign-offs exist.** Under SR 11-7 this document requires review by a
+validation function independent of development, and there isn't one — developer
+and validator are the same party. That is limitation #2 in §2 and it remains the
+single largest blocker to any production use of this model.
 
 ---
 
-## Sections NOT written (the remaining 80% of this document)
+## Still missing from this document
 
-6. **Monitoring plan.** What is tracked in production, alert thresholds,
-   retraining triggers, ownership, and paging. The *analysis* that should drive
-   it exists (RESULTS.md §6 ranks four drift signals by sensitivity and explains
-   why feature PSI is last); the plan itself does not.
-7. **Fairness / disparate impact.** No synthetic protected-attribute overlay, no
-   adverse impact ratio, no score-distribution comparison, no proxy-feature test.
-   Nothing about fairness has been done, and the empty section is left visible.
-8. **Stability thresholds and action.** PSI is computed and banded; what happens
-   at each band, and who does it, is not written.
-9. **Champion/challenger promotion criteria**: shadow period, minimum lift,
-   calibration gate, rollback trigger.
-10. **Ongoing validation schedule, change log, sign-offs.**
-
-Also missing outside this document: the scoring API (FastAPI/Docker) returning
-score + reason codes + model version, and the Evidently drift job.
+- **Independent validation.** Structural, not fixable by writing more here.
+- **Real-data revalidation.** Every number is generator-dependent; the IEEE-CIS
+  swap-in changes all of them.
+- **Business-necessity and less-discriminatory-alternative analysis** in §7.
+- **Benchmarking against a vendor or bureau score**, which is what a real MRM
+  review would demand as an external reference point.
