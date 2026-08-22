@@ -32,3 +32,5 @@ jobs:
       - name: API and monitoring tests
         run: python -m pytest tests -q
 
+      - name: Champion/challenger promotion gates
+        run: python run_promotion.py

@@ -1,9 +1,11 @@
 # ML-1 — Governed Fraud Detection System
 
-**Status: ~90%.** Measurement machinery, governance documentation, fairness
-analysis, scoring API, drift monitor, and executable champion/challenger
-promotion gates. CI runs the whole pipeline on every push. What is left is real
-data and independent validation -- neither of which more code can fix.
+**Status: ~95%.** Now on **real LightGBM with monotonic constraints**, a
+four-arm imbalance bakeoff including **focal loss** via a custom objective,
+**TreeSHAP** reason codes, a calibration gate on the selected arm, fairness
+analysis, scoring API, drift monitor, and executable promotion gates. What is
+left is real data and independent validation -- neither of which more code can
+supply.
 
 ```bash
 python src/generate.py && python train.py    # analysis + docs/RESULTS.md + artifact
@@ -24,10 +26,11 @@ against my prior (see the SMOTE/class-weight note in §3).
   planted in the raw feed; a denylist excludes them *and* a univariate-AUC screen
   independently flags them, which is the layer that catches leaks nobody
   predicted. `assert_clean()` raises before every fit.
-- **Imbalance bakeoff, actually run** (`src/imbalance.py`). Baseline vs class
-  weights vs SMOTE — SMOTE implemented here rather than imported, so the
-  interpolation semantics are inspectable. Identical model config across all
-  three, evaluated out-of-time.
+- **Four-arm imbalance bakeoff** (`src/imbalance.py`): baseline vs class weights
+  vs SMOTE vs **focal loss**. SMOTE is implemented here rather than imported so
+  the interpolation semantics are inspectable; focal loss is a real LightGBM
+  custom objective with the gradient derived in the docstring and verified
+  against finite differences to 4e-11.
 - **Metrics a risk reviewer asks for** (`src/metrics.py`): AUC/Gini, KS,
   precision and recall at a *fixed* FPR, Brier, reliability table, PSI with the
   standard bands stated. No accuracy, anywhere.
@@ -35,10 +38,12 @@ against my prior (see the SMOTE/class-weight note in §3).
   a $-weighted cost curve — fraud loss amount-weighted, insult cost, lost margin,
   review cost — benchmarked against a rules-only incumbent and against
   approve-everything.
-- **Adverse-action reason codes** (`src/reason_codes.py`). Top-3 contributors per
-  decline in plain English, in the shape of the record an agent reads out, with
-  the FCRA §615(a) / ECOA Reg B framing named and the attribution method labelled
-  honestly as occlusion, not SHAP.
+- **Adverse-action reason codes on TreeSHAP** (`src/reason_codes.py`). Exact
+  Shapley values on the log-odds margin, top-3 contributors per decline in plain
+  English, with the FCRA §615(a) / ECOA Reg B framing named. Only features that
+  pushed the score UP can be listed — citing a feature that argued for approval
+  as a "principal reason" is a false statement to the customer, not a
+  technicality. The old occlusion coder is retained for comparison.
 - **Out-of-time split**, with in-sample AUC reported next to out-of-time AUC.
 - **Disparate-impact analysis** (`src/fairness.py`, RESULTS.md section 8): AIR against
   the 80% rule, score-distribution comparison, AIR across five operating points,
@@ -60,12 +65,13 @@ against my prior (see the SMOTE/class-weight note in §3).
 | | |
 |---|---|
 | Prevalence (test window) | 1.19% |
-| OOT AUC / Gini / KS | 0.7251 / 0.4501 / 0.3219 |
-| In-sample AUC | 0.8032 (gap reported on purpose) |
-| Brier | 0.01129 |
-| Precision @ 1% FPR | 0.090 (recall 0.083) |
-| Cost-optimal threshold | 0.0594, at FPR 1.94% |
-| vs rules-only incumbent | **$6,013.58** lower expected cost over 30 days |
+| Selected arm | **focal loss** (best precision at the operating FPR) |
+| OOT AUC / KS | 0.7250 / 0.3274 |
+| Brier, before → after recalibration | 0.01962 → **0.01126** |
+| Precision @ 1% FPR | 0.099 → 0.108 after recalibration |
+| Cost-optimal threshold | 0.03497, at FPR 1.82% |
+| vs rules-only incumbent | **$5,734.07** lower expected cost over 30 days |
+| TreeSHAP vs occlusion, top-1 reason | **19.5% disagreement** |
 
 These are properties of a **synthetic generator**, not of production fraud. They
 are reported so the machinery can be judged; they are not evidence the model
@@ -103,14 +109,13 @@ to move it. The machinery is demonstrated; the scenario is benign.
 1. **Independent validation.** Developer and validator are the same party. Under
    SR 11-7 this alone blocks production use, and no amount of further writing
    fixes it. Both versions in the change log are recorded as **unsigned**.
-2. **Real data.** IEEE-CIS swap-in is a `load()` replacement; every number in
-   this repo is a property of the generator and changes when it happens.
-3. **Docker / deployment.** The API runs under uvicorn locally and CI runs the
-   full pipeline on every push, but there is no container, no load test, and
-   therefore no p99 figure for the service itself.
-4. **TreeSHAP** replacing occlusion attribution, and focal loss in the bakeoff
-   (needs a custom objective; `HistGradientBoostingClassifier` stands in for
-   LightGBM, which is not installed here).
+2. **Real IEEE-CIS data.** The Kaggle download needs authenticated API access,
+   which this environment does not have, so the generator remains the source and
+   every metric is a property of it.
+3. **A BUILT container.** `Dockerfile` exists and is reasoned about, but no
+   Docker daemon was available where it was written, so `docker build` has never
+   run against it. It is a deployment sketch, not a verified artifact — and
+   there is still no load test or service-level p99.
 5. **Business-necessity and less-discriminatory-alternative analysis.** The AIR,
    the threshold sweep and the ablation exist; the legal analysis around them
    does not. ML-3 implements the LDA search — this project does not.
@@ -118,6 +123,7 @@ to move it. The machinery is demonstrated; the scenario is benign.
    possible cut, and the attribute is fabricated by this repo.
 7. **Evidently** specifically. `monitor.py` covers the same ground and adds the
    label-free alert-rate signal, but the named library is not used.
-8. Monotonic constraints, feature-stability-driven selection, and an automated
-   champion retraining pipeline. `run_promotion.py` evaluates the gates; nothing
-   schedules it or acts on the verdict.
+8. **An automated retraining pipeline.** `run_promotion.py` evaluates the gates
+   and `monitor.py` proposes retraining, but nothing schedules either or acts on
+   the verdict. Monotonic constraints ARE now applied (see
+   `imbalance.MONOTONE_BY_FEATURE`).

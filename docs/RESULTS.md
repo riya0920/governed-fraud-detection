@@ -37,40 +37,42 @@ Identical model config across all three; only the imbalance treatment differs. E
 
 | strategy | in-sample AUC | **OOT AUC** | Gini | KS | Brier | precision@1%FPR | recall@1%FPR | note |
 |---|---|---|---|---|---|---|---|---|
-| baseline | 0.8032 | **0.7251** | 0.4501 | 0.3219 | 0.01129 | 0.090 | 0.083 | no imbalance handling |
-| class_weight | 0.8100 | **0.7223** | 0.4446 | 0.3203 | 0.18511 | 0.087 | 0.082 | sample_weight = neg/pos = 81.4 on positives |
-| smote | 0.8072 | **0.7140** | 0.4281 | 0.3247 | 0.01215 | 0.060 | 0.055 | minority resampled to 25% of majority (166537 -> 205643 rows) |
+| baseline | 0.8029 | **0.7257** | 0.4515 | 0.3300 | 0.01134 | 0.096 | 0.089 | no imbalance handling |
+| class_weight | 0.8094 | **0.7234** | 0.4469 | 0.3260 | 0.18692 | 0.093 | 0.086 | sample_weight = neg/pos = 81.4 on positives |
+| smote | 0.7863 | **0.7343** | 0.4687 | 0.3428 | 0.01247 | 0.080 | 0.075 | minority resampled to 25% of majority (166537 -> 205643 rows) |
+| focal | 0.8043 | **0.7250** | 0.4500 | 0.3274 | 0.01962 | 0.099 | 0.088 | focal a=0.25 g=2.0; reg_lambda 0.1 not 5.0 (see imbalance.py) -- raw margin via sigmoid, NOT calibrated |
 
-In-sample AUC is shown next to out-of-time AUC on purpose. The gap (0.8032 -> 0.7251 for the selected model) is the honest number: it is part model capacity and part a real regime change in the test window, and section 6 separates the two.
+In-sample AUC is shown next to out-of-time AUC on purpose. The gap (0.8043 -> 0.7250 for the selected model) is the honest number: it is part model capacity and part a real regime change in the test window, and section 6 separates the two.
 
-**Selected: `baseline`** on precision at 1% FPR -- the operating constraint, since that FPR is the friction budget the business agreed to.
+**Selected: `focal`** on precision at 1% FPR -- the operating constraint, since that FPR is the friction budget the business agreed to.
 
 
 What the numbers actually say on this run (the commentary below is generated from them, not asserted ahead of them):
 
-- Rank-ordering barely moves across the three: AUC spread is 0.0110. Whatever imbalance handling buys here, it is not separation.
-- Calibration does move, a lot. `class_weight` has the worst Brier (0.18511 vs 0.01129 for `baseline`), because re-weighting/resampling shifts the base rate the model is fit on, so its output stops being a probability of fraud and becomes a probability of fraud *in a reweighted world that does not exist*. That matters here specifically: the operating threshold in section 5 is chosen by $-weighted cost, and that arithmetic consumes calibrated probabilities.
+- Rank-ordering barely moves across the three: AUC spread is 0.0109. Whatever imbalance handling buys here, it is not separation.
+- Calibration does move, a lot. `class_weight` has the worst Brier (0.18692 vs 0.01134 for `baseline`), because re-weighting/resampling shifts the base rate the model is fit on, so its output stops being a probability of fraud and becomes a probability of fraud *in a reweighted world that does not exist*. That matters here specifically: the operating threshold in section 5 is chosen by $-weighted cost, and that arithmetic consumes calibrated probabilities.
 - `smote` does not win on any column reported here. Interpolating between minority points assumes fraud lives on a smooth manifold; it lives in scattered modes, so the synthetic points land where no fraud actually is. This is the run, not a citation.
 
 If a re-weighted model were needed for other reasons, the fix is not to abandon it but to recalibrate it (Platt/isotonic on a held-out window) and re-check Brier before it touches the cost curve.
+
+
+**The selected arm failed the calibration gate and was recalibrated.** Brier 0.01962 -> 0.01126 (best arm 0.01134); precision at 1% FPR 0.099 -> 0.108. Isotonic regression is monotone, so it re-labels scores without re-ordering them -- the ranking the arm was selected for is unchanged, and the probabilities the cost curve consumes are now meaningful. Selecting on precision while feeding an uncalibrated score into a $-weighted threshold would have produced a confident and wrong operating point.
 
 
 ## 4. Calibration (selected model)
 
 | decile | n | mean predicted | observed |
 |---|---|---|---|
-| 0 | 8,343 | 0.00176 | 0.00228 |
-| 1 | 8,331 | 0.00247 | 0.00276 |
-| 2 | 8,365 | 0.00320 | 0.00406 |
-| 3 | 8,346 | 0.00441 | 0.00635 |
-| 4 | 8,345 | 0.00574 | 0.00887 |
-| 5 | 8,348 | 0.00758 | 0.01054 |
-| 6 | 8,344 | 0.01037 | 0.01019 |
-| 7 | 8,348 | 0.01467 | 0.01222 |
-| 8 | 8,346 | 0.02244 | 0.01881 |
-| 9 | 8,347 | 0.04863 | 0.03954 |
+| 0 | 6,576 | 0.00148 | 0.00243 |
+| 2 | 16,858 | 0.00335 | 0.00320 |
+| 3 | 2,742 | 0.00495 | 0.00438 |
+| 4 | 11,077 | 0.00708 | 0.00686 |
+| 6 | 19,253 | 0.01032 | 0.00951 |
+| 7 | 10,225 | 0.01248 | 0.01271 |
+| 8 | 8,066 | 0.02049 | 0.01984 |
+| 9 | 8,666 | 0.03701 | 0.03854 |
 
-Brier score: **0.01129**
+Brier score: **0.01126**
 
 
 ## 5. Threshold economics
@@ -81,9 +83,9 @@ Cost inputs (policy, not model): fraud handling $15.00, insult cost $25.00, lost
 |---|---|---|---|---|---|---|---|
 | approve everything | - | 0.000 | 0.000 | 0 | $286,939.33 | $0.00 | $286,939.33 |
 | rules only (incumbent) | - | 0.0139 | 0.076 | 1,223 | $190,315.58 | $59,879.86 | $250,487.44 |
-| model @ cost-optimal | 0.05940 | 0.0194 | 0.132 | 1,725 | $180,519.69 | $63,446.17 | $244,473.86 |
+| model @ cost-optimal | 0.03497 | 0.0182 | 0.131 | 1,627 | $184,368.44 | $59,880.93 | $244,753.37 |
 
-**Expected loss reduction vs the rules-only incumbent: $6,013.58 over 83,463 test transactions (30 days).** Accuracy is not reported anywhere in this document: at 1.156% prevalence, approving everything scores 98.844% accurate and is the most expensive row in the table above.
+**Expected loss reduction vs the rules-only incumbent: $5,734.07 over 83,463 test transactions (30 days).** Accuracy is not reported anywhere in this document: at 1.156% prevalence, approving everything scores 98.844% accurate and is the most expensive row in the table above.
 
 
 ## 6. Stability: PSI vs the training window
@@ -92,9 +94,9 @@ Bands: <0.10 stable | 0.10-0.25 monitor | >0.25 investigate.
 
 | window | score PSI | band |
 |---|---|---|
-| days 60-70 | 0.0004 | stable |
-| days 70-80 | 0.0005 | stable |
-| days 80-90 | 0.0004 | stable |
+| days 60-70 | 11.2797 | INVESTIGATE |
+| days 70-80 | 11.3048 | INVESTIGATE |
+| days 80-90 | 11.2407 | INVESTIGATE |
 
 | feature | PSI, whole population | band | PSI, fraud rows only | band |
 |---|---|---|---|---|
@@ -124,102 +126,115 @@ What actually catches this early, in priority order:
 
 | window | alert rate @ frozen thr | precision | recall | n fraud |
 |---|---|---|---|---|
-| days 60-70 | 0.0207 | 0.0813 | 0.1483 | 317 |
-| days 70-80 | 0.0205 | 0.0765 | 0.1358 | 324 |
-| days 80-90 | 0.0208 | 0.0629 | 0.1111 | 324 |
+| days 60-70 | 0.9808 | 0.0115 | 0.9905 | 317 |
+| days 70-80 | 0.9825 | 0.0117 | 1.0000 | 324 |
+| days 80-90 | 0.9807 | 0.0120 | 1.0000 | 324 |
+
+### Attribution method: TreeSHAP vs occlusion
+
+The previous implementation used occlusion-against-median. It is cheap and exactly reproducible, and it is interaction-blind: joint effects are credited entirely to whichever feature is occluded. TreeSHAP computes exact Shapley values instead.
+
+Measured on the 200 highest-scoring test transactions:
+
+| | disagreement |
+|---|---|
+| principal (top-1) reason differs | 24.0% |
+| top-3 reason SET differs | 25.0% |
+
+That disagreement rate is the argument for the switch. Had the two always agreed, the cheaper method would have been the right choice; since they do not, the one with the additivity guarantee is what a declined customer is entitled to.
 
 ## 7. Adverse-action reason codes (sample declines)
 
 ```json
 {
-  "score": 0.235247,
+  "score": 0.376835,
   "decision": "decline",
-  "threshold": 0.059398069239996305,
+  "threshold": 0.034965803250127755,
   "model_version": "fraud-gbm-0.1.0",
   "reason_codes": [
     {
       "rank": 1,
-      "feature": "mcc_risk",
-      "contribution": 0.17127,
-      "statement": "Merchant category carries elevated fraud rates",
-      "observed_value": 1.1
+      "feature": "amount_minor",
+      "contribution": 0.67611,
+      "statement": "Transaction amount is unusual for this account",
+      "observed_value": 226920.0
     },
     {
       "rank": 2,
-      "feature": "amount_minor",
-      "contribution": 0.15579,
-      "statement": "Transaction amount is unusual for this account",
-      "observed_value": 45240.0
+      "feature": "device_change",
+      "contribution": 0.34282,
+      "statement": "Transaction came from a device not seen on this account before",
+      "observed_value": 1.0
     },
     {
       "rank": 3,
-      "feature": "device_change",
-      "contribution": 0.10689,
-      "statement": "Transaction came from a device not seen on this account before",
-      "observed_value": 1.0
+      "feature": "velocity_24h",
+      "contribution": 0.30346,
+      "statement": "Unusually many transactions on this card in the last 24 hours",
+      "observed_value": 2.0
     }
   ],
-  "attribution_method": "occlusion-vs-median (not SHAP; see reason_codes.py)"
+  "attribution_method": "TreeSHAP (exact Shapley values on the log-odds margin)"
 }
 {
-  "score": 0.227904,
+  "score": 0.407793,
   "decision": "decline",
-  "threshold": 0.059398069239996305,
+  "threshold": 0.034965803250127755,
   "model_version": "fraud-gbm-0.1.0",
   "reason_codes": [
     {
       "rank": 1,
       "feature": "amount_minor",
-      "contribution": 0.177,
+      "contribution": 0.71073,
       "statement": "Transaction amount is unusual for this account",
-      "observed_value": 153904.0
+      "observed_value": 208731.0
     },
     {
       "rank": 2,
-      "feature": "mcc_risk",
-      "contribution": 0.17564,
-      "statement": "Merchant category carries elevated fraud rates",
-      "observed_value": 1.4
+      "feature": "cross_border",
+      "contribution": 0.39182,
+      "statement": "Transaction originated outside the cardholder's usual country",
+      "observed_value": 1.0
     },
     {
       "rank": 3,
       "feature": "device_change",
-      "contribution": 0.10543,
+      "contribution": 0.36004,
       "statement": "Transaction came from a device not seen on this account before",
       "observed_value": 1.0
     }
   ],
-  "attribution_method": "occlusion-vs-median (not SHAP; see reason_codes.py)"
+  "attribution_method": "TreeSHAP (exact Shapley values on the log-odds margin)"
 }
 {
-  "score": 0.2243,
+  "score": 0.383308,
   "decision": "decline",
-  "threshold": 0.059398069239996305,
+  "threshold": 0.034965803250127755,
   "model_version": "fraud-gbm-0.1.0",
   "reason_codes": [
     {
       "rank": 1,
-      "feature": "mcc_risk",
-      "contribution": 0.17192,
-      "statement": "Merchant category carries elevated fraud rates",
-      "observed_value": 2.2
+      "feature": "amount_minor",
+      "contribution": 0.7393,
+      "statement": "Transaction amount is unusual for this account",
+      "observed_value": 230074.0
     },
     {
       "rank": 2,
-      "feature": "amount_minor",
-      "contribution": 0.17082,
-      "statement": "Transaction amount is unusual for this account",
-      "observed_value": 14136.0
+      "feature": "velocity_24h",
+      "contribution": 0.43581,
+      "statement": "Unusually many transactions on this card in the last 24 hours",
+      "observed_value": 3.0
     },
     {
       "rank": 3,
-      "feature": "device_change",
-      "contribution": 0.13532,
-      "statement": "Transaction came from a device not seen on this account before",
+      "feature": "cross_border",
+      "contribution": 0.32527,
+      "statement": "Transaction originated outside the cardholder's usual country",
       "observed_value": 1.0
     }
   ],
-  "attribution_method": "occlusion-vs-median (not SHAP; see reason_codes.py)"
+  "attribution_method": "TreeSHAP (exact Shapley values on the log-odds margin)"
 }
 ```
 
@@ -233,10 +248,10 @@ Framing: neither model uses the attribute as an input, so disparate **treatment*
 
 | group | n | approval rate |
 |---|---|---|
-| 1 | 29,004 | 0.9732 |
-| 0 | 54,459 | 0.9826 |
+| 1 | 29,004 | 0.9737 |
+| 0 | 54,459 | 0.9842 |
 
-**AIR = 0.9905** (80% rule: flags below 0.80) -> does not flag. Gap in approval rate: 0.93 percentage points.
+**AIR = 0.9893** (80% rule: flags below 0.80) -> does not flag. Gap in approval rate: 1.05 percentage points.
 
 The 80% rule is a screen that triggers investigation. It is not proof of discrimination below the line, and not a safe harbour above it.
 
@@ -245,10 +260,10 @@ The 80% rule is a screen that triggers investigation. It is not proof of discrim
 
 | group | n | mean score | median | p90 | p99 |
 |---|---|---|---|---|---|
-| 1 | 29,004 | 0.01425 | 0.00824 | 0.03359 | 0.08459 |
-| 0 | 54,459 | 0.01100 | 0.00588 | 0.02590 | 0.06919 |
+| 1 | 29,004 | 0.01352 | 0.00945 | 0.02506 | 0.08527 |
+| 0 | 54,459 | 0.01062 | 0.00945 | 0.02090 | 0.04027 |
 
-Group-separation AUC of the score itself: **0.5781** (0.500 = the two score distributions are interchangeable). Mean gap +0.00325.
+Group-separation AUC of the score itself: **0.5854** (0.500 = the two score distributions are interchangeable). Mean gap +0.00290.
 
 Two models can share an AIR and still distribute risk very differently; a single threshold ratio hides that, which is why this table exists alongside 8.1.
 
@@ -259,11 +274,11 @@ AIR at one threshold is a single sample from a curve.
 
 | target decline rate | threshold | approval g1 | approval g0 | AIR | flags |
 |---|---|---|---|---|---|
-| 10.0% | 0.02861 | 0.8700 | 0.9160 | 0.9498 |  |
-| 5.0% | 0.04124 | 0.9341 | 0.9584 | 0.9746 |  |
-| 2.5% | 0.05535 | 0.9672 | 0.9791 | 0.9879 |  |
-| 1.0% | 0.07384 | 0.9862 | 0.9920 | 0.9941 |  |
-| 0.5% | 0.09595 | 0.9927 | 0.9962 | 0.9965 |  |
+| 10.0% | 0.02245 | 0.8613 | 0.9147 | 0.9416 |  |
+| 5.0% | 0.03314 | 0.9081 | 0.9441 | 0.9618 |  |
+| 2.5% | 0.03314 | 0.9081 | 0.9441 | 0.9618 |  |
+| 1.0% | 0.05970 | 0.9821 | 0.9902 | 0.9918 |  |
+| 0.5% | 0.08527 | 0.9884 | 0.9937 | 0.9946 |  |
 
 ### 8.4 Proxy ablation -- the test that matters
 
@@ -271,16 +286,16 @@ Dropping the protected attribute achieves nothing if the remaining features reco
 
 | | full model | proxies dropped | change |
 |---|---|---|---|
-| AIR at 98th-pct threshold | 0.9900 | 0.9954 | +0.0054 |
+| AIR at 98th-pct threshold | 0.9918 | 0.9965 | +0.0047 |
 | group reconstructable from features (AUC) | 0.7273 | 0.5533 | -0.1740 |
 
 Dropped: `mcc_risk`, `card_tenure_days`
 
-Reading of this run, quantified: reconstruction lift above chance falls from 0.2273 to 0.0533, so **23% of the recoverable group signal survives** dropping `mcc_risk`, `card_tenure_days`. The outcome disparity moved +0.0054.
+Reading of this run, quantified: reconstruction lift above chance falls from 0.2273 to 0.0533, so **23% of the recoverable group signal survives** dropping `mcc_risk`, `card_tenure_days`. The outcome disparity moved +0.0047.
 
-Most of the recoverable signal lived in the dropped columns -- the easier situation, and not the one to plan for. Note what did NOT happen even so: the disparity barely moved (+0.0054). Removing the proxies made the group harder to *reconstruct* without making the outcomes meaningfully more equal, which is the distinction that matters. Reconstructability and impact are different questions, and fixing the first is not evidence of fixing the second.
+Most of the recoverable signal lived in the dropped columns -- the easier situation, and not the one to plan for. Note what did NOT happen even so: the disparity barely moved (+0.0047). Removing the proxies made the group harder to *reconstruct* without making the outcomes meaningfully more equal, which is the distinction that matters. Reconstructability and impact are different questions, and fixing the first is not evidence of fixing the second.
 
-Caveat on interpreting any of 8.4: the disparity here is small to begin with (AIR 0.9905, well above the 0.80 screen), so there is little room for ablation to move it. This test is far more informative on a model that actually flags -- the machinery is demonstrated, the scenario is benign.
+Caveat on interpreting any of 8.4: the disparity here is small to begin with (AIR 0.9893, well above the 0.80 screen), so there is little room for ablation to move it. This test is far more informative on a model that actually flags -- the machinery is demonstrated, the scenario is benign.
 
 
 ### 8.5 What this section does NOT establish

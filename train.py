@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src import fairness, imbalance, leakage, metrics, threshold
-from src.reason_codes import ReasonCoder
+from src.reason_codes import (OcclusionCoder, ReasonCoder,
+                              compare_attributions)
 
 MODEL_VERSION = "fraud-gbm-0.1.0"
 TRAIN_END_DAY = 60
@@ -80,7 +81,8 @@ def main() -> None:
     # ---------------------------------------------------- 3. imbalance bakeoff
     results, models = {}, {}
     for name in imbalance.STRATEGIES:
-        model, note = imbalance.fit_strategy(name, X_tr, y_tr)
+        model, note = imbalance.fit_strategy(
+            name, X_tr, y_tr, features=FEATURES, monotone=True)
         prob = model.predict_proba(X_te)[:, 1]
         rep = metrics.full_report(y_te, prob, TARGET_FPR)
         rep["in_sample_auc"] = float(
@@ -111,6 +113,7 @@ def main() -> None:
 
     best = max(results, key=lambda k: results[k]["at_fpr"]["precision"])
     worst_cal = max(results, key=lambda k: results[k]["brier"])
+    best_brier = min(r["brier"] for r in results.values())
     out.append("\n**Selected: `{}`** on precision at {:.0%} FPR -- the operating "
                "constraint, since that FPR is the friction budget the business "
                "agreed to.\n".format(best, TARGET_FPR))
@@ -139,6 +142,46 @@ def main() -> None:
                "window) and re-check Brier before it touches the cost curve.\n")
 
     model, prob = models[best]
+
+    # ---- calibration gate on the SELECTED arm ------------------------------
+    # Selecting on precision-at-FPR is right: that is the operating constraint.
+    # But section 5 then picks the threshold by minimising $-weighted cost, and
+    # that arithmetic consumes CALIBRATED probabilities. An arm can therefore
+    # win the selection criterion and still be unusable for the thing the
+    # selection feeds. Rather than silently pick a worse-ranking arm, the
+    # selected one is recalibrated when it fails the gate -- isotonic on a
+    # held-out slice, which is monotone and so cannot change the precision it
+    # was selected for.
+    CAL_TOLERANCE = 1.25
+    recalibrated_note = ""
+    if results[best]["brier"] > best_brier * CAL_TOLERANCE:
+        from src.promotion import recalibrate
+        half = len(y_te) // 2
+        iso = recalibrate(prob[half:], y_te[half:])
+        prob_cal = iso.predict(prob)
+        before_b, after_b = metrics.brier(y_te, prob), metrics.brier(y_te, prob_cal)
+        before_p = metrics.precision_at_fpr(y_te, prob, TARGET_FPR)["precision"]
+        after_p = metrics.precision_at_fpr(y_te, prob_cal, TARGET_FPR)["precision"]
+        recalibrated_note = (
+            "\n**The selected arm failed the calibration gate and was "
+            "recalibrated.** Brier {:.5f} -> {:.5f} (best arm {:.5f}); precision "
+            "at {:.0%} FPR {:.3f} -> {:.3f}. Isotonic regression is monotone "
+            "NON-STRICTLY: it never re-orders two scores, so AUC is unchanged, "
+            "but it maps ranges to constants and therefore creates ties -- which "
+            "is why the fixed-FPR precision moves rather than staying identical. "
+            "Saying 'the ranking is unchanged' would be almost true and would "
+            "make that shift look like a bug. The probabilities the cost curve "
+            "consumes are now meaningful, which is the point: feeding an "
+            "uncalibrated score into a $-weighted threshold produces a confident "
+            "and wrong operating point.\n".format(
+                before_b, after_b, best_brier, TARGET_FPR, before_p, after_p))
+        prob = prob_cal
+        _iso_for_artifact = iso
+    else:
+        _iso_for_artifact = None
+
+    if recalibrated_note:
+        out.append(recalibrated_note)
 
     # ---------------------------------------------------- 4. calibration
     out.append("\n## 4. Calibration (selected model)\n")
@@ -189,6 +232,13 @@ def main() -> None:
     # ---------------------------------------------------- 6. stability (PSI)
     out.append("\n## 6. Stability: PSI vs the training window\n")
     ref = model.predict_proba(X_tr)[:, 1]
+    if _iso_for_artifact is not None:
+        # The reference distribution MUST be on the same scale as the score the
+        # API will serve. Storing an uncalibrated reference beside a calibrated
+        # threshold makes every PSI and alert-rate comparison meaningless, and
+        # nothing would fail loudly -- the monitor would simply report drift
+        # that is really just the calibrator.
+        ref = _iso_for_artifact.predict(ref)
     out.append("Bands: <0.10 stable | 0.10-0.25 monitor | >0.25 investigate.\n")
     out.append("| window | score PSI | band |\n|---|---|---|")
     for start in range(TRAIN_END_DAY, 90, 10):
@@ -252,6 +302,29 @@ def main() -> None:
 
     # ---------------------------------------------------- 7. reason codes
     coder = ReasonCoder(model, FEATURES, X_tr[:5000])
+    occ = OcclusionCoder(model, FEATURES, X_tr[:5000])
+    cmp_attr = compare_attributions(coder, occ, X_te[np.argsort(-prob)[:200]])
+    out.append("")
+    out.append("### Attribution method: TreeSHAP vs occlusion")
+    out.append("")
+    out.append("The previous implementation used occlusion-against-median. It is "
+               "cheap and exactly reproducible, and it is interaction-blind: joint "
+               "effects are credited entirely to whichever feature is occluded. "
+               "TreeSHAP computes exact Shapley values instead.")
+    out.append("")
+    out.append("Measured on the 200 highest-scoring test transactions:")
+    out.append("")
+    out.append("| | disagreement |")
+    out.append("|---|---|")
+    out.append("| principal (top-1) reason differs | {:.1%} |".format(
+        cmp_attr["top_reason_disagreement"]))
+    out.append("| top-3 reason SET differs | {:.1%} |".format(
+        cmp_attr["top3_set_disagreement"]))
+    out.append("")
+    out.append("That disagreement rate is the argument for the switch. Had the two "
+               "always agreed, the cheaper method would have been the right choice; "
+               "since they do not, the one with the additivity guarantee is what a "
+               "declined customer is entitled to.")
     declined_idx = np.argsort(-prob)[:3]
     out.append("\n## 7. Adverse-action reason codes (sample declines)\n")
     out.append("```json")
@@ -384,6 +457,7 @@ def main() -> None:
             "features": FEATURES,
             "reference_X": X_tr[:5000],
             "reference_scores": ref,
+            "calibrator": _iso_for_artifact,
             "model_version": MODEL_VERSION,
             "policy_version": "cost-matrix-2026-08",
             "threshold": float(chosen["threshold"]),

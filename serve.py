@@ -48,7 +48,8 @@ _state: dict = {}
 async def lifespan(_app):
     art = load_artifact()
     _state["artifact"] = art
-    _state["coder"] = ReasonCoder(art["model"], art["features"], art["reference_X"])
+    _state["coder"] = ReasonCoder(art["model"], art["features"], art["reference_X"],
+                                  calibrator=art.get("calibrator"))
     AUDIT_LOG.parent.mkdir(exist_ok=True)
     yield
     _state.clear()
