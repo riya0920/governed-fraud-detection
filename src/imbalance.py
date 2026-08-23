@@ -157,7 +157,15 @@ class FocalClassifier:
         self.classes_ = np.array([0, 1])
 
     def predict_proba(self, X):
-        raw = np.asarray(self.model.predict_proba(X), dtype=float)
+        # LightGBM warns on every call that it is returning raw scores. It is
+        # right and this class is the reason it is fine, but a warning on every
+        # scoring call is noise in a service log, and noise in a service log is
+        # how a real warning gets missed.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=".*customized objective function.*")
+            raw = np.asarray(self.model.predict_proba(X), dtype=float)
         if raw.ndim == 2 and raw.shape[1] == 2:
             return raw
         raw = raw.reshape(-1)

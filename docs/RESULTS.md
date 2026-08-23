@@ -56,7 +56,7 @@ What the numbers actually say on this run (the commentary below is generated fro
 If a re-weighted model were needed for other reasons, the fix is not to abandon it but to recalibrate it (Platt/isotonic on a held-out window) and re-check Brier before it touches the cost curve.
 
 
-**The selected arm failed the calibration gate and was recalibrated.** Brier 0.01962 -> 0.01126 (best arm 0.01134); precision at 1% FPR 0.099 -> 0.108. Isotonic regression is monotone, so it re-labels scores without re-ordering them -- the ranking the arm was selected for is unchanged, and the probabilities the cost curve consumes are now meaningful. Selecting on precision while feeding an uncalibrated score into a $-weighted threshold would have produced a confident and wrong operating point.
+**The selected arm failed the calibration gate and was recalibrated.** Brier 0.01962 -> 0.01126 (best arm 0.01134); precision at 1% FPR 0.099 -> 0.108. Isotonic regression is monotone NON-STRICTLY: it never re-orders two scores, so AUC is unchanged, but it maps ranges to constants and therefore creates ties -- which is why the fixed-FPR precision moves rather than staying identical. Saying 'the ranking is unchanged' would be almost true and would make that shift look like a bug. The probabilities the cost curve consumes are now meaningful, which is the point: feeding an uncalibrated score into a $-weighted threshold produces a confident and wrong operating point.
 
 
 ## 4. Calibration (selected model)

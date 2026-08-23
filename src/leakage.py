@@ -38,7 +38,11 @@ def audit(df: pd.DataFrame, target: str = "is_fraud",
         if col in exclude:
             continue
         s = df[col]
-        if not np.issubdtype(s.dtype, np.number):
+        # pandas' own dtype predicate, not np.issubdtype: pandas 3 introduced
+        # extension dtypes (StringDtype among them) that numpy cannot interpret
+        # at all, and the numpy version raises TypeError instead of returning
+        # False. The audit then dies on a column it was supposed to encode.
+        if not pd.api.types.is_numeric_dtype(s):
             s = s.astype("category").cat.codes
         try:
             auc = roc_auc_score(y, s)

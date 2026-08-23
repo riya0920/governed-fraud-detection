@@ -456,6 +456,17 @@ def main() -> None:
             "model": model,
             "features": FEATURES,
             "reference_X": X_tr[:5000],
+            # The labels for that reference window travel with it. Without them
+            # the retraining pipeline can compute drift but cannot fit a
+            # challenger, which makes it a monitor with extra steps.
+            "reference_y": y_tr[:5000],
+            # An OUT-OF-TIME holdout, stored so a challenger can be compared
+            # against the champion on rows NEITHER model trained on. Comparing
+            # them on the champion's own training window is biased toward the
+            # champion by exactly the amount it memorised, and a promotion gate
+            # scored that way protects the incumbent rather than the customer.
+            "holdout_X": X_te[:8000],
+            "holdout_y": y_te[:8000],
             "reference_scores": ref,
             "calibrator": _iso_for_artifact,
             "model_version": MODEL_VERSION,
