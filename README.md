@@ -203,9 +203,12 @@ That flatters the tail by construction, so read it as a floor. SE-3's
 2. **Real IEEE-CIS data.** The Kaggle download needs authenticated API access,
    which this environment does not have, so the generator remains the source and
    every metric is a property of it.
-3. **A BUILT container.** `Dockerfile` exists and is reasoned about, but no
-   Docker daemon was available where it was written, so `docker build` has never
-   run against it. It is a deployment sketch, not a verified artifact.
+3. **A container that has been RUN under load.** `docker build` now runs clean
+   (282MB image, Docker Engine 29.1.3), so the image is verified to build. What
+   has not happened is running the service inside it under load: the p99 in this
+   README was measured on the host, not in the container, and the two are not
+   the same number.
+
 4. **Evidently.** It now *installs* (`pip install evidently` succeeds) but does
    not import on CPython 3.14: `pydantic.v1.errors.ConfigError: unable to infer
    type for attribute "relative"`, raised from its own pydantic-v1 compatibility
