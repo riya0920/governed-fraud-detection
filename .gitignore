@@ -25,3 +25,6 @@ Thumbs.db
 
 # artifacts
 artifacts/
+
+# ULB fraud extract: 73MB of public data, reproducible via fetch_real_data.py.
+data/creditcard.*
