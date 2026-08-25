@@ -306,9 +306,26 @@ than reading short. A strictly better failure.
    shim. `monitor.py` covers the same ground and adds the label-free alert-rate
    signal. Recorded as *attempted and blocked*, with the error, rather than as a
    choice.
-5. **A real protected attribute.** Both attributes in the intersectional analysis
-   are synthetic overlays constructed by this repo, so no fairness number here
-   describes a real population.
+5. ~~**A real protected attribute.**~~ **DONE** —
+   `run_intersectional_real.py` runs this repo's own intersectional machinery
+   on 15,587 real HMDA applications carrying race AND sex, both self-reported,
+   on the same applicants. That configuration is what intersectional analysis
+   needs and is genuinely hard to find. The machinery under test is ML-1's; the
+   DECISION is HMDA's — a mortgage approval, not a fraud score — and this
+   validates the analysis without turning ML-1 into a lending model.
+
+   The verdict is honestly null: no cell falls below 0.80. **But the direction
+   is the more precise reading** — the minority×female cell sits at **0.8443**,
+   below both marginals (0.8569 and 0.9878), so the effect the module exists to
+   find IS present and simply does not cross the threshold. Reporting that as
+   "no finding" would discard it.
+
+   Running it also exposed a limitation of the tool: `intersectional_table`
+   iterates over `(0, 1)`, so **both axes must be binary**, forcing race to
+   minority/non-minority. That is the exact aggregation ML-3 showed hides a
+   failing group on this same data — the aggregate passes at 0.8478 while four
+   named groups fail. A binary table can therefore report "no cell below 0.80"
+   on a population where a named group is being declined at a failing rate.
 6. **Business-necessity documentation.** The AIR, the threshold sweep, the
    ablation and the alternative search all exist; whether `mcc_risk` is justified
    by loss experience is the lender's evidence to produce, not the modeller's to
