@@ -300,7 +300,7 @@ than reading short. A strictly better failure.
    README was measured on the host, not in the container, and the two are not
    the same number.
 
-4. **Evidently.** It now *installs* (`pip install evidently` succeeds) but does
+4. **Evidently.** *(Still blocked, and re-verified 2026-08-24.)* It now *installs* (`pip install evidently` succeeds) but does
    not import on CPython 3.14: `pydantic.v1.errors.ConfigError: unable to infer
    type for attribute "relative"`, raised from its own pydantic-v1 compatibility
    shim. `monitor.py` covers the same ground and adds the label-free alert-rate
@@ -313,7 +313,21 @@ than reading short. A strictly better failure.
    ablation and the alternative search all exist; whether `mcc_risk` is justified
    by loss experience is the lender's evidence to produce, not the modeller's to
    assert.
-7. **A scheduler.** `run_retraining.py` is the job; something still has to invoke
-   it nightly, and that is cron, Airflow or a systemd timer. No scheduler is
-   embedded on purpose - a scheduler inside the application is one nobody can see
-   the state of.
+7. **A scheduler** — *the scheduling LOGIC is now built; the invocation is not.*
+   `src/schedule.py` decides what is due (cadence follows signal latency:
+   alert-rate hourly, score PSI 6-hourly, performance weekly), applies
+   hysteresis so a flapping signal does not page repeatedly, coalesces missed
+   runs rather than back-filling them — the OPPOSITE of SE-2's settlement
+   catch-up, because monitoring is not cumulative — and enforces a retrain
+   cooldown an alert cannot override.
+
+   `run_schedule.py` over 14 simulated days: **60 pages under a naive
+   every-breach policy, 1 under this one.** Detection delay on the event that
+   mattered was 26 hours, of which 24 was the monitoring OUTAGE and 2 the
+   deliberate hysteresis — the outage dominated, which is the opposite of where
+   tuning attention usually goes.
+
+   Something still has to invoke it, and that is cron, Airflow or a systemd
+   timer. Deliberate: the decisions above are testable precisely because they
+   take `now` as a parameter instead of reading the clock. See
+   `docs/SCHEDULE.md`.
