@@ -327,7 +327,20 @@ than reading short. A strictly better failure.
    deliberate hysteresis — the outage dominated, which is the opposite of where
    tuning attention usually goes.
 
-   Something still has to invoke it, and that is cron, Airflow or a systemd
-   timer. Deliberate: the decisions above are testable precisely because they
-   take `now` as a parameter instead of reading the clock. See
-   `docs/SCHEDULE.md`.
+   ~~Something still has to invoke it~~ — **`ops/install_timers.sh` installs it
+   as a real systemd timer, verified firing** (`Result=success`, the pass ran
+   and correctly reported `ran=0 skipped=4` because nothing was due). The timer
+   is `Persistent=true`, which is safe ONLY because `due()` coalesces, and
+   carries a `RandomizedDelaySec` so every host does not fire at `:00`.
+
+   Three real failures were found by installing it rather than describing it:
+   the unit pointed at an interpreter without numpy exited 1 with *"MONITORING
+   PASS FAILED ... This is not drift"* — the exit-code separation working on a
+   real misconfiguration; a Windows interpreter handed a `/mnt/c/` path
+   resolved it as `C:\mnt\c\`; and systemd treats backslash in `ExecStart` as
+   an escape, so a Windows path came out with a carriage return in it. The
+   installer now detects the interpreter, converts the path, and **refuses to
+   install a timer that would fail on every fire.**
+
+   The scheduler still stays OUTSIDE the application, which was the original
+   argument and still holds. See `docs/SCHEDULE.md`.

@@ -271,3 +271,67 @@ def test_the_fastest_signal_is_the_one_evidently_would_not_provide():
     assert CADENCE_MINUTES["alert_rate"] == min(CADENCE_MINUTES.values()), (
         "the signal a drift library cannot provide should be the one run most "
         "frequently, since it is both the fastest and the least replaceable")
+
+
+# --------------------------------------------- the tick the timer invokes
+def test_the_tick_separates_broken_monitoring_from_drift():
+    """Two different incidents with two different responders.
+
+    "The model has drifted" and "the monitoring is broken" collapse into one
+    non-zero exit unless they are given separate codes, and collapsing them
+    hides the second behind the first.
+
+    This is not hypothetical: pointed at an interpreter without numpy, the
+    systemd unit exited 1 with "MONITORING PASS FAILED ... This is not drift".
+    A tick that had swallowed the ImportError and written an empty report would
+    have shown a healthy dashboard instead.
+    """
+    import run_schedule_tick as tick
+
+    assert tick.EXIT_OK == 0
+    assert tick.EXIT_PAGED == 10
+    assert tick.EXIT_BROKEN == 1
+    assert tick.EXIT_PAGED != tick.EXIT_BROKEN
+
+
+def test_a_page_is_not_reported_to_systemd_as_a_failure():
+    """A unit marked failed for a working alert is a unit somebody disables."""
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "ops"
+            / "install_timers.sh").read_text(encoding="utf-8")
+    assert "SuccessExitStatus=0 10" in unit
+
+
+def test_the_timer_is_persistent_because_the_schedule_coalesces():
+    """Persistent=true fires ONCE after a missed window rather than not at all,
+    and that is safe only because `due()` coalesces. A scheduler that fired 72
+    catch-up runs would page for drift that has already resolved."""
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "ops"
+            / "install_timers.sh").read_text(encoding="utf-8")
+    assert "Persistent=true" in unit
+    assert "RandomizedDelaySec" in unit, "every host firing at :00 is a herd"
+
+
+def test_the_installer_refuses_an_interpreter_without_the_dependencies():
+    """Installing a timer that fails on every fire is worse than not installing
+    one: it produces a red unit nobody trusts and a schedule nobody runs."""
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "ops"
+            / "install_timers.sh").read_text(encoding="utf-8")
+    assert "Refusing to install a timer that would fail on every fire" in unit
+    assert "import numpy, pandas, sklearn" in unit
+
+
+def test_a_windows_interpreter_gets_a_forward_slashed_path():
+    """systemd treats backslash in ExecStart as an ESCAPE, so a Windows path
+    goes in and a carriage return comes out. Windows Python accepts C:/... so
+    the whole class of problem is avoided rather than escaped around."""
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parents[1] / "ops"
+            / "install_timers.sh").read_text(encoding="utf-8")
+    assert "wslpath -w" in unit and "tr " in unit
