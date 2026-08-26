@@ -307,7 +307,7 @@ than reading short. A strictly better failure.
    artifact is pickled under scikit-learn 1.8.0 while the image resolves 1.9.0
    — a warning, not a failure, which is what makes it worth recording.
    The service then served **1,200 requests at 8 concurrent with 0 errors**,
-   p50 44.84ms / p99 95.16ms, 171 rps.
+   p50 45.69ms / p99 82.48ms, 168 rps.
 
    Two things this deliberately does **not** claim. It is **not a
    container-versus-host comparison** — the load is driven from inside WSL
@@ -315,7 +315,12 @@ than reading short. A strictly better failure.
    differ in the *client* as well as the server, and the README's claim that
    the two p99s differ remains untested. And the numbers were taken with the
    host at load average ~10, so they are a **floor**, not this service's best
-   latency.
+   latency. Two consecutive runs gave p99 **95.16ms** and **82.48ms** on an
+   otherwise identical setup — a 15% spread — so read the p99 as *this order of
+   magnitude*, not as a measurement. `docs/CONTAINER_LOAD.md` reports the
+   second; the first is quoted here only to make the variance visible, because
+   a single p99 printed to two decimals implies a precision one run does not
+   have.
 
 4. **Evidently.** *(Still blocked, and re-verified 2026-08-24.)* It now *installs* (`pip install evidently` succeeds) but does
    not import on CPython 3.14: `pydantic.v1.errors.ConfigError: unable to infer
