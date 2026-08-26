@@ -294,11 +294,28 @@ than reading short. A strictly better failure.
    the compliance step impossible, which is itself the finding. What IEEE-CIS
    would add is *named* features on real data, i.e. the one combination neither
    source here provides.
-3. **A container that has been RUN under load.** `docker build` now runs clean
-   (282MB image, Docker Engine 29.1.3), so the image is verified to build. What
-   has not happened is running the service inside it under load: the p99 in this
-   README was measured on the host, not in the container, and the two are not
-   the same number.
+3. ~~**A container that has been RUN under load.**~~ **DONE, and running it
+   found the image could not start at all** — `run_container_load.py`,
+   `docs/CONTAINER_LOAD.md`. The build was green and the service raised
+   `OSError: libgomp.so.1: cannot open shared object file` on import: lightgbm
+   links against the GNU OpenMP runtime, `python:3.12-slim` does not ship it,
+   and the pip install of a manylinux wheel resolves perfectly because the
+   library it needs at *load* time is a system package pip knows nothing about.
+   **That is the whole argument for running a container rather than building
+   one**, and it stayed invisible for as long as nobody ran it. Fixed with
+   `libgomp1` ahead of the pip layer. Running it also surfaced that the model
+   artifact is pickled under scikit-learn 1.8.0 while the image resolves 1.9.0
+   — a warning, not a failure, which is what makes it worth recording.
+   The service then served **1,200 requests at 8 concurrent with 0 errors**,
+   p50 44.84ms / p99 95.16ms, 171 rps.
+
+   Two things this deliberately does **not** claim. It is **not a
+   container-versus-host comparison** — the load is driven from inside WSL
+   because the container publishes on WSL's loopback, so a host baseline would
+   differ in the *client* as well as the server, and the README's claim that
+   the two p99s differ remains untested. And the numbers were taken with the
+   host at load average ~10, so they are a **floor**, not this service's best
+   latency.
 
 4. **Evidently.** *(Still blocked, and re-verified 2026-08-24.)* It now *installs* (`pip install evidently` succeeds) but does
    not import on CPython 3.14: `pydantic.v1.errors.ConfigError: unable to infer

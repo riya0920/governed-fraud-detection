@@ -4,10 +4,20 @@
 #   docker build -t finhm/ml1-governed-fraud:latest .
 # Image size 282MB, Docker Engine 29.1.3 on Ubuntu 26.04 (WSL2).
 #
-# What that does and does not establish: the image BUILDS and the
-# layers resolve. It is not a statement that the service inside it has
-# been run under load, and for the four HTTP services the load numbers
-# in each README were measured on the host rather than in the container.
+# AND RUNNING IT FOUND THE IMAGE WAS BROKEN. `docker build` succeeded and
+# `docker run` died on startup:
+#
+#   OSError: libgomp.so.1: cannot open shared object file
+#
+# lightgbm links against libgomp (the GNU OpenMP runtime) and python:3.12-slim
+# does not ship it. A pip install of a manylinux wheel resolves and installs
+# perfectly; the shared library it needs at LOAD time is a system package pip
+# knows nothing about. So the build was green and the service could not start,
+# for as long as nobody ran it.
+#
+# That is the whole argument for running a container rather than building one:
+# `docker build` proves the layers resolve and proves nothing about whether the
+# thing inside starts.
 FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -17,6 +27,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Dependencies first: a source change must not invalidate this layer.
+# libgomp1: lightgbm's OpenMP runtime. NOT optional and NOT a pip dependency --
+# the wheel installs without it and fails at import. Installed before pip so a
+# requirements change does not re-run apt.
+RUN apt-get update     && apt-get install -y --no-install-recommends libgomp1     && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
