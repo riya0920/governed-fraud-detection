@@ -352,7 +352,7 @@ than reading short. A strictly better failure.
    ablation and the alternative search all exist; whether `mcc_risk` is justified
    by loss experience is the lender's evidence to produce, not the modeller's to
    assert.
-7. **A scheduler** — *the scheduling LOGIC is now built; the invocation is not.*
+7. ~~**A scheduler.**~~ **DONE** — logic and invocation both.
    `src/schedule.py` decides what is due (cadence follows signal latency:
    alert-rate hourly, score PSI 6-hourly, performance weekly), applies
    hysteresis so a flapping signal does not page repeatedly, coalesces missed
